@@ -1,0 +1,13 @@
+
+checkpoints/*
+!checkpoints/.gitkeep
+
+data_completa/*
+!data_completa/.gitkeep
+
+
+modelo_actual.pth
+
+
+__pycache__/
+*.pyc
