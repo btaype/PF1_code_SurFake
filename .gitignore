@@ -8,6 +8,7 @@ data_completa/*
 
 modelo_actual.pth
 
+README.md
 
 __pycache__/
 *.pyc
