@@ -1,393 +1,212 @@
-import csv
+import os
+import cv2
 import torch
-import torch.nn as nn
+import numpy as np
 
-from tqdm import tqdm
-from sklearn.metrics import accuracy_score,f1_score,roc_auc_score
-from torch.utils.data import DataLoader,Subset
+from types import SimpleNamespace
+from models.uprightnet_model import UprightNet
 
-from ImputData import SurFakeDataset
-from Modetrain import MobileNetV2_SurFake
 
-import random
-from collections import defaultdict
+base_dir="data_completa"
 
+fake_input=os.path.join(base_dir,"fake")
+real_input=os.path.join(base_dir,"real")
 
-device="cuda" if torch.cuda.is_available() else "cpu"
+fake_output=os.path.join(base_dir,"fake_gsd")
+real_output=os.path.join(base_dir,"real_gsd")
 
-data_dir="data_completa"
+batch_size=8
 
-batch_size=12
-epocas=30
+img_exts=(".jpg",".jpeg",".png",".bmp",".webp")
 
-lr=0.001
-momentum=0.9
-weight_decay=0.0001
 
-modelo_path="modelo_actual.pth"
-csv_resultados="resultados_epocas.csv"
+def build_opt():
 
+    opt=SimpleNamespace()
 
-def get_video_group(rgb_path):
+    opt.gpu_ids=[0] if torch.cuda.is_available() else []
 
-    path=rgb_path.replace("\\","/")
-    parts=path.split("/")
+    opt.isTrain=False
+    opt.mode="ResNet"
+    opt.dataset="interiornet"
+    opt.checkpoints_dir="./checkpoints"
+    opt.name="test_local"
 
-    if "real" in parts:
-        idx=parts.index("real")
+    opt.lr=0.0004
+    opt.lr_policy="step"
+    opt.lr_decay_epoch=10
+    opt.epoch_count=1
+    opt.niter=1
+    opt.niter_decay=1
+    opt.backprop_eig=1
 
-        return "real_"+parts[idx+1]
+    opt.w_pose=0.0
+    opt.w_cam=0.0
+    opt.w_up=0.0
+    opt.w_grad=0.0
 
-    if "fake" in parts:
-        idx=parts.index("fake")
+    return opt
 
-        tecnica=parts[idx+1]
-        video_id=parts[idx+2]
 
-        return f"fake_{tecnica}_{video_id}"
+def cargar_img(path):
 
-    raise ValueError(f"No se pudo identificar grupo: {rgb_path}")
+    img=cv2.imread(path)
 
+    if img is None:
+        raise FileNotFoundError(f"No se pudo abrir: {path}")
 
-def get_strata_group(rgb_path):
+    img=cv2.cvtColor(img,cv2.COLOR_BGR2RGB)
 
-    path=rgb_path.replace("\\","/")
-    parts=path.split("/")
+    img=cv2.resize(img,(384,288))
 
-    if "real" in parts:
-        return "real"
+    img=img.astype(np.float32)/255.0
 
-    if "fake" in parts:
-        idx=parts.index("fake")
+    img=torch.from_numpy(img).permute(2,0,1)
 
-        tecnica=parts[idx+1]
+    return img
 
-        return f"fake_{tecnica}"
 
-    raise ValueError(f"No se pudo identificar clase: {rgb_path}")
+def juntar_imgs(input_root,output_root):
 
+    items=[]
 
-def split_por_video(dataset,train_ratio=0.72,val_ratio=0.14,seed=42):
+    for dirpath,_,filenames in os.walk(input_root):
 
-    random.seed(seed)
+        for filename in filenames:
 
-    grupos=defaultdict(lambda: defaultdict(list))
+            if not filename.lower().endswith(img_exts):
+                continue
 
-    for idx,(rgb_path,gsd_path,label) in enumerate(dataset.samples):
+            img_path=os.path.join(dirpath,filename)
 
-        strata=get_strata_group(rgb_path)
-        video=get_video_group(rgb_path)
+            rel_path=os.path.relpath(img_path,input_root)
 
-        grupos[strata][video].append(idx)
+            rel_base=os.path.splitext(rel_path)[0]
 
-    train_idx=[]
-    val_idx=[]
-    test_idx=[]
+            out_path=os.path.join(output_root,rel_base+".npy")
 
-    for strata,videos in grupos.items():
+            if os.path.exists(out_path):
+                continue
 
-        videos_lista=list(videos.keys())
+            items.append((img_path,out_path))
 
-        random.shuffle(videos_lista)
+    return items
 
-        n=len(videos_lista)
 
-        n_train=int(train_ratio*n)
-        n_val=int(val_ratio*n)
+def guardar_gsd_batch(gsd_batch,out_paths):
 
-        train_videos=videos_lista[:n_train]
-        val_videos=videos_lista[n_train:n_train+n_val]
-        test_videos=videos_lista[n_train+n_val:]
+    gsd_batch=gsd_batch.detach().cpu()
 
-        for vg in train_videos:
-            train_idx.extend(videos[vg])
+    for gsd,out_path in zip(gsd_batch,out_paths):
 
-        for vg in val_videos:
-            val_idx.extend(videos[vg])
+        x=gsd.permute(1,2,0).numpy()
 
-        for vg in test_videos:
-            test_idx.extend(videos[vg])
+        x=cv2.resize(x,(224,224))
 
-        print(
-            strata,
-            "videos total:",n,
-            "train:",len(train_videos),
-            "val:",len(val_videos),
-            "test:",len(test_videos)
-        )
+        x=(x+1.0)/2.0
+        x=np.clip(x,0.0,1.0)
 
-    random.shuffle(train_idx)
+        x=(x*255).astype(np.uint8)
 
-    print("imagenes train:",len(train_idx))
-    print("imagenes val:",len(val_idx))
-    print("imagenes test:",len(test_idx))
+        x=cv2.cvtColor(x,cv2.COLOR_RGB2BGR)
 
-    return(
-        Subset(dataset,train_idx),
-        Subset(dataset,val_idx),
-        Subset(dataset,test_idx)
-    )
+        out_path=os.path.splitext(out_path)[0]+".png"
 
+        os.makedirs(os.path.dirname(out_path),exist_ok=True)
 
-def metricas(y_true,y_pred,y_prob):
+        cv2.imwrite(out_path,x)
 
-    acc=accuracy_score(y_true,y_pred)
 
-    f1=f1_score(y_true,y_pred)
+def procesar_items(modelo,items,nombre):
 
-    try:
-        auc=roc_auc_score(y_true,y_prob)
+    total=len(items)
 
-    except ValueError:
-        auc=0.0
+    print(f"\nProcesando {nombre}: {total} imagenes pendientes")
 
-    return acc,f1,auc
+    if total==0:
+        print(f"No hay imagenes nuevas en {nombre}")
+        return
 
+    modelo.switch_to_eval()
 
-def evaluar(modelo,loader,criterion,nombre="Validation"):
+    procesadas=0
+    fallidas=0
 
-    modelo.eval()
+    for start in range(0,total,batch_size):
 
-    total_loss=0.0
+        batch_items=items[start:start+batch_size]
 
-    y_true=[]
-    y_pred=[]
-    y_prob=[]
+        imgs=[]
+        out_paths=[]
 
-    barra=tqdm(loader,total=len(loader),desc=nombre,leave=False)
+        for img_path,out_path in batch_items:
 
-    with torch.no_grad():
+            try:
+                img=cargar_img(img_path)
 
-        for x,y in barra:
+                imgs.append(img)
 
-            x=x.to(device)
-            y=y.to(device)
+                out_paths.append(out_path)
 
-            salida=modelo(x)
+            except Exception as e:
+                fallidas+=1
+                print(f"Error leyendo {img_path}: {e}")
 
-            loss=criterion(salida,y)
+        if len(imgs)==0:
+            continue
 
-            probs=torch.softmax(salida,dim=1)[:,1]
+        batch=torch.stack(imgs,dim=0)
 
-            preds=salida.argmax(dim=1)
+        try:
 
-            total_loss+=loss.item()*x.size(0)
+            with torch.no_grad():
 
-            y_true.extend(y.cpu().numpy())
-            y_pred.extend(preds.cpu().numpy())
-            y_prob.extend(probs.cpu().numpy())
+                modelo.input=batch
 
-            barra.set_postfix({
-                "loss":f"{loss.item():.4f}",
-                "gpu":torch.cuda.is_available()
-            })
+                modelo.forward()
 
-    avg_loss=total_loss/len(loader.dataset)
+                gsd_batch=modelo.pred_up_geo_unit
 
-    acc,f1,auc=metricas(y_true,y_pred,y_prob)
+                guardar_gsd_batch(gsd_batch,out_paths)
 
-    return avg_loss,acc,f1,auc
+            procesadas+=len(imgs)
 
+        except RuntimeError as e:
 
-def train():
+            print(f"\nError CUDA {start}: {e}")
 
-    print("device:",device)
+            raise e
 
-    if torch.cuda.is_available():
-        print("gpu:",torch.cuda.get_device_name(0))
+        if procesadas%200==0 or procesadas==total:
+            print(f"{nombre}: {procesadas}/{total} procesadas | fallidas: {fallidas}")
 
-    else:
-        print("cuda no disponible")
+    print(f"\nFinalizado {nombre}")
+    print(f"Procesadas: {procesadas}")
+    print(f"Fallidas: {fallidas}")
 
-    dataset=SurFakeDataset(data_dir)
 
-    total=len(dataset)
+def main():
 
-    train_dataset,val_dataset,test_dataset=split_por_video(dataset)
+    print("cuda disponible:",torch.cuda.is_available())
 
-    print("total:",total)
-    print("train:",len(train_dataset))
-    print("val:",len(val_dataset))
-    print("test:",len(test_dataset))
+    opt=build_opt()
 
-    train_loader=DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=4,
-        pin_memory=True
-    )
+    modelo=UprightNet(opt,_isTrain=False)
 
-    val_loader=DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True
-    )
+    fake_items=juntar_imgs(fake_input,fake_output)
 
-    test_loader=DataLoader(
-        test_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True
-    )
+    real_items=juntar_imgs(real_input,real_output)
 
-    modelo=MobileNetV2_SurFake(
-        num_classes=2,
-        pretrained=True
-    ).to(device)
+    procesar_items(modelo,fake_items,"fake")
 
-    criterion=nn.CrossEntropyLoss()
+    procesar_items(modelo,real_items,"real")
 
-    optimizer=torch.optim.SGD(
-        modelo.parameters(),
-        lr=lr,
-        momentum=momentum,
-        weight_decay=weight_decay
-    )
+    print("\nlisto")
 
-    with open(csv_resultados,mode="w",newline="") as f:
+    print("gsd fake guardado en:",fake_output)
 
-        writer=csv.writer(f)
-
-        writer.writerow([
-            "epoch",
-            "train_loss","train_acc","train_f1","train_auc",
-            "val_loss","val_acc","val_f1","val_auc"
-        ])
-
-    for epoch in range(epocas):
-
-        modelo.train()
-
-        total_loss=0.0
-
-        y_true=[]
-        y_pred=[]
-        y_prob=[]
-
-        barra=tqdm(
-            enumerate(train_loader),
-            total=len(train_loader),
-            desc=f"epoch {epoch+1}/{epocas}"
-        )
-
-        for batch_idx,(x,y) in barra:
-
-            x=x.to(device)
-            y=y.to(device)
-
-            optimizer.zero_grad()
-
-            salida=modelo(x)
-
-            loss=criterion(salida,y)
-
-            loss.backward()
-
-            optimizer.step()
-
-            probs=torch.softmax(salida,dim=1)[:,1]
-
-            preds=salida.argmax(dim=1)
-
-            total_loss+=loss.item()*x.size(0)
-
-            y_true.extend(y.cpu().numpy())
-            y_pred.extend(preds.detach().cpu().numpy())
-            y_prob.extend(probs.detach().cpu().numpy())
-
-            barra.set_postfix({
-                "loss":f"{loss.item():.4f}",
-                "batch":f"{batch_idx+1}/{len(train_loader)}",
-                "batch_size":x.size(0),
-                "input":tuple(x.shape),
-                "gpu":torch.cuda.is_available(),
-                "vram_gb":(
-                    f"{torch.cuda.memory_allocated()/1024**3:.2f}"
-                    if torch.cuda.is_available()
-                    else "0"
-                )
-            })
-
-        train_loss=total_loss/len(train_loader.dataset)
-
-        train_acc,train_f1,train_auc=metricas(
-            y_true,y_pred,y_prob
-        )
-
-        val_loss,val_acc,val_f1,val_auc=evaluar(
-            modelo,val_loader,criterion,nombre="validation"
-        )
-
-        print(
-            f"\nepoch [{epoch+1}/{epocas}]\n"
-            f"train loss: {train_loss:.4f} | "
-            f"train acc: {train_acc:.4f} | "
-            f"train f1: {train_f1:.4f} | "
-            f"train auc: {train_auc:.4f}\n"
-            f"val loss: {val_loss:.4f} | "
-            f"val acc: {val_acc:.4f} | "
-            f"val f1: {val_f1:.4f} | "
-            f"val auc: {val_auc:.4f}\n"
-        )
-
-        torch.save({
-
-            "epoch":epoch+1,
-
-            "model_state_dict":modelo.state_dict(),
-
-            "optimizer_state_dict":optimizer.state_dict(),
-
-            "train_loss":train_loss,
-            "train_acc":train_acc,
-            "train_f1":train_f1,
-            "train_auc":train_auc,
-
-            "val_loss":val_loss,
-            "val_acc":val_acc,
-            "val_f1":val_f1,
-            "val_auc":val_auc,
-
-        },modelo_path)
-
-        with open(csv_resultados,mode="a",newline="") as f:
-
-            writer=csv.writer(f)
-
-            writer.writerow([
-                epoch+1,
-
-                train_loss,
-                train_acc,
-                train_f1,
-                train_auc,
-
-                val_loss,
-                val_acc,
-                val_f1,
-                val_auc
-            ])
-
-    test_loss,test_acc,test_f1,test_auc=evaluar(
-        modelo,test_loader,criterion,nombre="test"
-    )
-
-    print("\ntest final")
-
-    print(f"test loss: {test_loss:.4f}")
-    print(f"test acc : {test_acc:.4f}")
-    print(f"test f1  : {test_f1:.4f}")
-    print(f"test auc : {test_auc:.4f}")
-
-    print("\nentrenamiento terminado")
-
-    print("modelo guardado:",modelo_path)
-    print("csv:",csv_resultados)
+    print("gsd real guardado en:",real_output)
 
 
 if __name__=="__main__":
-    train()
+    main()
