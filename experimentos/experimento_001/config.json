@@ -1,0 +1,14 @@
+{
+  "data_dir": "data_completa",
+  "output_dir": "experimentos",
+  "nombre_experimento": "experimento_001",
+  "batch_size": 8,
+  "epocas": 35,
+  "lr": 0.0005,
+  "momentum": 0.9,
+  "weight_decay": 0.0001,
+  "porcentaje_datos": 60.0,
+  "train_count": 720,
+  "val_count": 140,
+  "seed": 42
+}

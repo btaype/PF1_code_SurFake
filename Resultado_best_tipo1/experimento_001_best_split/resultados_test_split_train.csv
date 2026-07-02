@@ -1,0 +1,2 @@
+data_dir,modelo_path,epoch,test_loss,test_acc,test_f1,test_auc,tn,fp,fn,tp,confusion_matrix
+data_completa,experimentos\experimento_001\mejor_val_f1.pth,29,0.15161433095509796,0.9611260053619303,0.9768212900743021,0.9889631340410077,2860,500,283,16499,"[[2860, 500], [283, 16499]]"

@@ -1,0 +1,2 @@
+data_dir,modelo_path,epoch,test_loss,test_acc,test_f1,test_auc
+data_completa2/test,experimentos/experimento_001/checkpoints/epoch_020.pth,20,1.3927744787338496,0.6037234042553191,0.6342062193126022,0.64270914292401

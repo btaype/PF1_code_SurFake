@@ -2,18 +2,11 @@ import os
 import cv2
 import torch
 import numpy as np
+import argparse
 
 from types import SimpleNamespace
 from models.uprightnet_model import UprightNet
 
-
-base_dir="data_completa"
-
-fake_input=os.path.join(base_dir,"fake")
-real_input=os.path.join(base_dir,"real")
-
-fake_output=os.path.join(base_dir,"fake_gsd")
-real_output=os.path.join(base_dir,"real_gsd")
 
 batch_size=8
 
@@ -66,6 +59,28 @@ def cargar_img(path):
     return img
 
 
+def parse_args():
+
+    parser=argparse.ArgumentParser(
+        description="Genera GSD para carpetas fake y real."
+    )
+
+    parser.add_argument(
+        "--base_dir",
+        default="data_completa",
+        help="Carpeta que contiene fake/ y real/."
+    )
+
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=batch_size,
+        help="Cantidad de imagenes por batch."
+    )
+
+    return parser.parse_args()
+
+
 def juntar_imgs(input_root,output_root):
 
     items=[]
@@ -83,7 +98,7 @@ def juntar_imgs(input_root,output_root):
 
             rel_base=os.path.splitext(rel_path)[0]
 
-            out_path=os.path.join(output_root,rel_base+".npy")
+            out_path=os.path.join(output_root,rel_base+".png")
 
             if os.path.exists(out_path):
                 continue
@@ -187,7 +202,26 @@ def procesar_items(modelo,items,nombre):
 
 def main():
 
+    global batch_size
+
+    args=parse_args()
+
+    base_dir=args.base_dir
+
+    batch_size=args.batch_size
+
+    fake_input=os.path.join(base_dir,"fake")
+    real_input=os.path.join(base_dir,"real")
+
+    fake_output=os.path.join(base_dir,"fake_gsd")
+    real_output=os.path.join(base_dir,"real_gsd")
+
+    for input_root in (fake_input,real_input):
+        if not os.path.isdir(input_root):
+            raise FileNotFoundError(f"No existe la carpeta esperada: {input_root}")
+
     print("cuda disponible:",torch.cuda.is_available())
+    print("base_dir:",base_dir)
 
     opt=build_opt()
 

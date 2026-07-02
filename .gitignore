@@ -1,14 +1,26 @@
 
-checkpoints/*
-!checkpoints/.gitkeep
+data_completa/
+data_completa2/
+datasets/
+dataset/
+archive/
 
-data_completa/*
-!data_completa/.gitkeep
-
-
-modelo_actual.pth
 
 README.md
 
+
+**/*.pth
+**/*.pt
+**/*.ckpt
+**/*.bin
+
+
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pyd
+
+
+.env
+.venv/
+venv/

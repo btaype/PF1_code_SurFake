@@ -1,7 +1,11 @@
+import argparse
 import csv
+import json
+import os
 import torch
 import torch.nn as nn
 
+from datetime import datetime
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score,f1_score,roc_auc_score
 from torch.utils.data import DataLoader,Subset
@@ -28,6 +32,46 @@ modelo_path="modelo_actual.pth"
 csv_resultados="resultados_epocas.csv"
 
 
+def parse_args():
+
+    parser=argparse.ArgumentParser(
+        description="Entrena SurFake guardando checkpoints por epoca."
+    )
+
+    parser.add_argument("--data_dir",default=data_dir)
+    parser.add_argument("--output_dir",default="experimentos")
+    parser.add_argument("--nombre_experimento",default=None)
+    parser.add_argument("--batch_size",type=int,default=batch_size)
+    parser.add_argument("--epocas",type=int,default=epocas)
+    parser.add_argument("--lr",type=float,default=lr)
+    parser.add_argument("--momentum",type=float,default=momentum)
+    parser.add_argument("--weight_decay",type=float,default=weight_decay)
+    parser.add_argument("--porcentaje_datos",type=float,default=100.0)
+    parser.add_argument("--train_count",type=int,default=720)
+    parser.add_argument("--val_count",type=int,default=140)
+    parser.add_argument("--seed",type=int,default=42)
+
+    return parser.parse_args()
+
+
+def crear_carpeta_experimento(args):
+
+    if args.nombre_experimento:
+        nombre=args.nombre_experimento
+
+    else:
+        fecha=datetime.now().strftime("%Y%m%d_%H%M%S")
+        porcentaje=str(args.porcentaje_datos).replace(".","p")
+        nombre=f"train_{fecha}_datos_{porcentaje}"
+
+    carpeta=os.path.join(args.output_dir,nombre)
+    checkpoints_dir=os.path.join(carpeta,"checkpoints")
+
+    os.makedirs(checkpoints_dir,exist_ok=True)
+
+    return carpeta,checkpoints_dir
+
+
 def get_video_group(rgb_path):
 
     path=rgb_path.replace("\\","/")
@@ -47,6 +91,104 @@ def get_video_group(rgb_path):
         return f"fake_{tecnica}_{video_id}"
 
     raise ValueError(f"No se pudo identificar grupo: {rgb_path}")
+
+
+def get_split_video_id(rgb_path):
+
+    path=rgb_path.replace("\\","/")
+    parts=path.split("/")
+
+    if "real" in parts:
+        idx=parts.index("real")
+        video_id=parts[idx+1]
+
+    elif "fake" in parts:
+        idx=parts.index("fake")
+        video_id=parts[idx+2]
+
+    else:
+        raise ValueError(f"No se pudo identificar video_id: {rgb_path}")
+
+    video_id=video_id.lower()
+
+    if video_id.startswith("video_"):
+        video_id=video_id.split("_",1)[1]
+
+    return video_id.split("_")[0]
+
+
+def video_sort_key(video_id):
+
+    return int(video_id) if video_id.isdigit() else video_id
+
+
+def frame_sort_key(rgb_path):
+
+    base=os.path.splitext(os.path.basename(rgb_path))[0]
+
+    return int(base) if base.isdigit() else base
+
+
+def seleccionar_intercalados(indices,porcentaje,dataset,seed=42):
+
+    if porcentaje<=0 or porcentaje>100:
+        raise ValueError("--porcentaje_datos debe estar entre 0 y 100")
+
+    if porcentaje==100:
+        return list(indices)
+
+    grupos=defaultdict(list)
+
+    for idx in indices:
+        rgb_path,_,_=dataset.samples[idx]
+        grupos[get_video_group(rgb_path)].append(idx)
+
+    seleccionados=[]
+
+    for _,items in grupos.items():
+
+        items=sorted(
+            items,
+            key=lambda idx: frame_sort_key(dataset.samples[idx][0])
+        )
+
+        total=len(items)
+        cantidad=max(1,round(total*porcentaje/100.0))
+
+        if cantidad>=total:
+            seleccionados.extend(items)
+            continue
+
+        if cantidad==1:
+            seleccionados.append(items[total//2])
+            continue
+
+        posiciones=[
+            round(i*(total-1)/(cantidad-1))
+            for i in range(cantidad)
+        ]
+
+        seleccionados.extend(items[pos] for pos in posiciones)
+
+    random.seed(seed)
+    random.shuffle(seleccionados)
+
+    return seleccionados
+
+
+def reducir_subset_por_video(subset,porcentaje,seed=42):
+
+    if not isinstance(subset,Subset):
+        raise TypeError("Se esperaba un torch.utils.data.Subset")
+
+    indices=seleccionar_intercalados(
+        subset.indices,
+        porcentaje,
+        subset.dataset,
+        seed=seed
+    )
+
+    return Subset(subset.dataset,indices)
 
 
 def get_strata_group(rgb_path):
@@ -69,18 +211,28 @@ def get_strata_group(rgb_path):
     raise ValueError(f"no se pudo identificar la clase: {rgb_path}")
 
 
-def split_por_video(dataset,train_ratio=0.72,val_ratio=0.14,seed=42):
+def split_por_video(dataset,train_count=720,val_count=140,seed=42):
 
     random.seed(seed)
 
     grupos=defaultdict(lambda: defaultdict(list))
+    split_video_ids=set()
+    video_to_split_id={}
 
     for idx,(rgb_path,gsd_path,label) in enumerate(dataset.samples):
 
         strata=get_strata_group(rgb_path)
         video=get_video_group(rgb_path)
+        split_video_id=get_split_video_id(rgb_path)
 
         grupos[strata][video].append(idx)
+        split_video_ids.add(split_video_id)
+        video_to_split_id[video]=split_video_id
+
+    split_video_ids=sorted(split_video_ids,key=video_sort_key)
+
+    train_video_ids=set(split_video_ids[:train_count])
+    val_video_ids=set(split_video_ids[train_count:train_count+val_count])
 
     train_idx=[]
     val_idx=[]
@@ -90,16 +242,25 @@ def split_por_video(dataset,train_ratio=0.72,val_ratio=0.14,seed=42):
 
         videos_lista=list(videos.keys())
 
-        random.shuffle(videos_lista)
+        videos_lista.sort(key=lambda video:(video_sort_key(video_to_split_id[video]),video))
 
         n=len(videos_lista)
 
-        n_train=int(train_ratio*n)
-        n_val=int(val_ratio*n)
-
-        train_videos=videos_lista[:n_train]
-        val_videos=videos_lista[n_train:n_train+n_val]
-        test_videos=videos_lista[n_train+n_val:]
+        train_videos=[
+            video for video in videos_lista
+            if video_to_split_id[video] in train_video_ids
+        ]
+        val_videos=[
+            video for video in videos_lista
+            if video_to_split_id[video] in val_video_ids
+        ]
+        test_videos=[
+            video for video in videos_lista
+            if (
+                video_to_split_id[video] not in train_video_ids
+                and video_to_split_id[video] not in val_video_ids
+            )
+        ]
 
         for vg in train_videos:
             train_idx.extend(videos[vg])
@@ -193,6 +354,12 @@ def evaluar(modelo,loader,criterion,nombre="Validation"):
 
 def train():
 
+    args=parse_args()
+    carpeta_experimento,checkpoints_dir=crear_carpeta_experimento(args)
+    csv_epocas=os.path.join(carpeta_experimento,"resultados_epocas.csv")
+    csv_test=os.path.join(carpeta_experimento,"resultados_test.csv")
+    config_path=os.path.join(carpeta_experimento,"config.json")
+
     print("device:",device)
 
     if torch.cuda.is_available():
@@ -201,39 +368,59 @@ def train():
     else:
         print("cuda no disponible")
 
-    dataset=SurFakeDataset(data_dir)
+    print("experimento:",carpeta_experimento)
+    print("porcentaje datos train:",args.porcentaje_datos)
+
+    with open(config_path,mode="w",encoding="utf-8") as f:
+        json.dump(vars(args),f,indent=2)
+
+    dataset=SurFakeDataset(args.data_dir)
 
     total=len(dataset)
 
-    train_dataset,val_dataset,test_dataset=split_por_video(dataset)
+    train_dataset,val_dataset,test_dataset=split_por_video(
+        dataset,
+        train_count=args.train_count,
+        val_count=args.val_count,
+        seed=args.seed
+    )
+
+    train_original=len(train_dataset)
+
+    train_dataset=reducir_subset_por_video(
+        train_dataset,
+        args.porcentaje_datos,
+        seed=args.seed
+    )
 
     print("total:",total)
-    print("train:",len(train_dataset))
+    print("train original:",train_original)
+    print("train usado:",len(train_dataset))
     print("val:",len(val_dataset))
     print("test:",len(test_dataset))
 
     train_loader=DataLoader(
         train_dataset,
-        batch_size=batch_size,
+        batch_size=args.batch_size,
         shuffle=True,
         num_workers=4,
-        pin_memory=True
+        pin_memory=torch.cuda.is_available()
     )
 
     val_loader=DataLoader(
         val_dataset,
-        batch_size=batch_size,
+        batch_size=args.batch_size,
         shuffle=False,
         num_workers=4,
-        pin_memory=True
+        pin_memory=torch.cuda.is_available()
     )
 
     test_loader=DataLoader(
         test_dataset,
-        batch_size=batch_size,
+        batch_size=args.batch_size,
         shuffle=False,
         num_workers=4,
-        pin_memory=True
+        pin_memory=torch.cuda.is_available()
     )
 
     modelo=MobileNetV2_SurFake(
@@ -245,12 +432,12 @@ def train():
 
     optimizer=torch.optim.SGD(
         modelo.parameters(),
-        lr=lr,
-        momentum=momentum,
-        weight_decay=weight_decay
+        lr=args.lr,
+        momentum=args.momentum,
+        weight_decay=args.weight_decay
     )
 
-    with open(csv_resultados,mode="w",newline="") as f:
+    with open(csv_epocas,mode="w",newline="") as f:
 
         writer=csv.writer(f)
 
@@ -260,7 +447,9 @@ def train():
             "val_loss","val_acc","val_f1","val_auc"
         ])
 
-    for epoch in range(epocas):
+    mejor_val_f1=-1.0
+
+    for epoch in range(args.epocas):
 
         modelo.train()
 
@@ -273,7 +462,7 @@ def train():
         barra=tqdm(
             enumerate(train_loader),
             total=len(train_loader),
-            desc=f"epoch {epoch+1}/{epocas}"
+            desc=f"epoch {epoch+1}/{args.epocas}"
         )
 
         for batch_idx,(x,y) in barra:
@@ -325,7 +514,7 @@ def train():
         )
 
         print(
-            f"\nepoch [{epoch+1}/{epocas}]\n"
+            f"\nepoch [{epoch+1}/{args.epocas}]\n"
             f"train loss: {train_loss:.4f} | "
             f"train acc: {train_acc:.4f} | "
             f"train f1: {train_f1:.4f} | "
@@ -336,7 +525,7 @@ def train():
             f"val auc: {val_auc:.4f}\n"
         )
 
-        torch.save({
+        checkpoint={
 
             "epoch":epoch+1,
 
@@ -354,9 +543,26 @@ def train():
             "val_f1":val_f1,
             "val_auc":val_auc,
 
-        },modelo_path)
+            "config":vars(args),
 
-        with open(csv_resultados,mode="a",newline="") as f:
+        }
+
+        checkpoint_path=os.path.join(
+            checkpoints_dir,
+            f"epoch_{epoch+1:03d}.pth"
+        )
+
+        ultimo_path=os.path.join(carpeta_experimento,"ultimo.pth")
+
+        torch.save(checkpoint,checkpoint_path)
+        torch.save(checkpoint,ultimo_path)
+
+        if val_f1>mejor_val_f1:
+            mejor_val_f1=val_f1
+            mejor_path=os.path.join(carpeta_experimento,"mejor_val_f1.pth")
+            torch.save(checkpoint,mejor_path)
+
+        with open(csv_epocas,mode="a",newline="") as f:
 
             writer=csv.writer(f)
 
@@ -385,10 +591,32 @@ def train():
     print(f"test f1  : {test_f1:.4f}")
     print(f"test auc : {test_auc:.4f}")
 
+    with open(csv_test,mode="w",newline="") as f:
+
+        writer=csv.writer(f)
+
+        writer.writerow([
+            "test_loss","test_acc","test_f1","test_auc",
+            "checkpoint_final","checkpoint_mejor_val_f1"
+        ])
+
+        writer.writerow([
+            test_loss,
+            test_acc,
+            test_f1,
+            test_auc,
+            os.path.join(carpeta_experimento,"ultimo.pth"),
+            os.path.join(carpeta_experimento,"mejor_val_f1.pth")
+        ])
+
     print("\nentrenamiento terminado")
 
-    print("modelo guardado:",modelo_path)
-    print("csv:",csv_resultados)
+    print("carpeta experimento:",carpeta_experimento)
+    print("checkpoints por epoca:",checkpoints_dir)
+    print("modelo final:",os.path.join(carpeta_experimento,"ultimo.pth"))
+    print("mejor val f1:",os.path.join(carpeta_experimento,"mejor_val_f1.pth"))
+    print("csv epocas:",csv_epocas)
+    print("csv test:",csv_test)
 
 
 if __name__=="__main__":

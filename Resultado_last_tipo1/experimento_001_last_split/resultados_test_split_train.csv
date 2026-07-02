@@ -1,0 +1,2 @@
+data_dir,modelo_path,epoch,test_loss,test_acc,test_f1,test_auc,tn,fp,fn,tp,confusion_matrix
+data_completa,experimentos\experimento_001\ultimo.pth,34,0.20132118191244497,0.9573527951544037,0.9745338116272865,0.9844303313924784,2847,513,346,16436,"[[2847, 513], [346, 16436]]"

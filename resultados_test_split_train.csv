@@ -1,0 +1,2 @@
+data_dir,modelo_path,epoch,test_loss,test_acc,test_f1,test_auc
+data_completa,modelo_actual.pth,30,0.07419004568953647,0.9776089762684937,0.9864933664759965,0.9955398996089915

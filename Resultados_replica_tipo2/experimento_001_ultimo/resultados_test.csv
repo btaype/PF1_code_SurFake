@@ -1,0 +1,2 @@
+data_dir,modelo_path,epoch,checkpoint_train_loss,checkpoint_train_acc,checkpoint_train_f1,checkpoint_train_auc,checkpoint_val_loss,checkpoint_val_acc,checkpoint_val_f1,checkpoint_val_auc,test_loss,test_acc,test_f1,test_auc,tn,fp,fn,tp,confusion_matrix
+data_completa2/test,modelo_actual.pth,30,0.012462784335848255,0.9952693289993034,0.9971607568992447,0.9998036788476105,0.23817221928971868,0.9300720288115246,0.9575952438728464,0.9678722409948513,1.0810992800439359,0.5596926713947991,0.4528094013955197,0.5980329238878517,2555,815,2165,1233,"[[2555, 815], [2165, 1233]]"

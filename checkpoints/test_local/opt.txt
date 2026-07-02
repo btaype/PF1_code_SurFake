@@ -1,0 +1,10 @@
+------------ Options -------------
+checkpoints_dir: ./checkpoints/
+dataset: scannet
+gpu_ids: [0]
+isTrain: False
+log_comment: exp_upright_9_sphere_ls
+mode: ResnetModel3HeadsSplitNormalizationTightCoupled
+nThreads: 2
+name: test_local
+-------------- End ----------------
